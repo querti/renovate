@@ -22,6 +22,7 @@ export const Categories = [
   'php',
   'python',
   'rpm',
+  'rpmtest',
   'ruby',
   'rust',
   'swift',

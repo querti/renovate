@@ -233,6 +233,9 @@ importers:
       ini:
         specifier: 5.0.0
         version: 5.0.0
+      js-yaml:
+        specifier: 4.1.0
+        version: 4.1.0
       json-dup-key-validator:
         specifier: 1.0.3
         version: 1.0.3

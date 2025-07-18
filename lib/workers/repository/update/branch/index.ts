@@ -322,6 +322,7 @@ export async function processBranch(
     }
 
     // Check schedule
+    //isschedulednow is set here
     config.isScheduledNow = isScheduledNow(config, 'schedule');
     if (!config.isScheduledNow && !dependencyDashboardCheck) {
       if (!branchExists) {
@@ -482,7 +483,41 @@ export async function processBranch(
     logger.debug(`Using reuseExistingBranch: ${config.reuseExistingBranch!}`);
     if (!(config.reuseExistingBranch && config.skipBranchUpdate)) {
       await scm.checkoutBranch(config.baseBranch);
+      // lockfilemaintenance is done after schedule is set
       const res = await getUpdatedPackageFiles(config);
+      // check whether branch is within schedule is performed before lockfilemaintenance.
+      // since this could have changed (due to no CVEs being found), we need to redo the check again
+      if (!config.isScheduledNow && !dependencyDashboardCheck) {
+        if (!branchExists) {
+          logger.debug('Skipping branch creation as not within schedule');
+          return {
+            branchExists,
+            prNo: branchPr?.number,
+            result: 'not-scheduled',
+          };
+        }
+        if (config.updateNotScheduled === false && !config.rebaseRequested) {
+          logger.debug('Skipping branch update as not within schedule');
+          return {
+            branchExists,
+            prNo: branchPr?.number,
+            result: 'update-not-scheduled',
+          };
+        }
+        if (
+          !branchPr &&
+          !(config.automerge && config.automergeType === 'branch') // if branch is configured for automerge there's no need for a PR
+        ) {
+          logger.debug('Skipping PR creation out of schedule');
+          return {
+            branchExists,
+            result: 'not-scheduled',
+          };
+        }
+        logger.debug(
+          'Branch + PR exists but is not scheduled -- will update if necessary',
+        );
+      }
       // istanbul ignore if
       if (res.artifactErrors && config.artifactErrors) {
         res.artifactErrors = config.artifactErrors.concat(res.artifactErrors);

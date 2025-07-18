@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-type-assertion */
 import is from '@sindresorhus/is';
+import yaml from 'js-yaml';
 import { WORKER_FILE_UPDATE_FAILED } from '../../../../constants/error-messages';
 import { logger } from '../../../../logger';
 import { get } from '../../../../modules/manager';
@@ -41,10 +42,10 @@ async function getFileContent(
   return fileContent;
 }
 
-function sortPackageFiles(
+function sortPackageFiles<T extends FilePath>(
   config: BranchConfig,
   manager: string,
-  packageFiles: FilePath[],
+  packageFiles: T[],
 ): void {
   const managerPackageFiles = config.packageFiles?.[manager];
   if (!managerPackageFiles) {
@@ -418,6 +419,7 @@ export async function getUpdatedPackageFiles(
           const contents =
             updatedFileContents[packageFile.path] ||
             (await getFile(packageFile.path, config.baseBranch));
+
           const results = await managerUpdateArtifacts(manager, {
             packageFileName: packageFile.path,
             updatedDeps: [],
@@ -428,6 +430,26 @@ export async function getUpdatedPackageFiles(
               packageFile.path,
             ),
           });
+
+          if (
+            manager === 'rpmtest' &&
+            config.branchTopic === 'security-lock-file-maintenance'
+          ) {
+            // TODO: it might be tricky to put this data into the table
+            const parsedResults = parseRpmtestArtifactsResults(results);
+            logger.debug(
+              { parsedResults },
+              'RPM version changes detected by parseRpmtestArtifactsResults',
+            );
+            setScheduleIfNoCVEs(config, parsedResults);
+            addRpmtestPrBodyNotes(config, parsedResults);
+            // TODO: there are other fields of interest that may need to be set, namely isVulnerabilityAlert and similar
+            updateBranchConfigAfterArtifacts(config);
+            logger.debug(
+              { config },
+              'RPM version changes detected by addRpmtestPrBodyNotes',
+            );
+          }
           processUpdateArtifactResults(
             results,
             updatedArtifacts,
@@ -525,4 +547,169 @@ async function applyManagerBumpPackageVersion(
   );
 
   return result.bumpedContent;
+}
+
+function updateBranchConfigAfterArtifacts(config: BranchConfig): void {
+  //config.schedule = [];
+  config.commitBody = '[SECURITY] - This update addresses a vulnerability.';
+  config.prCreation = 'immediate';
+  config.prHeader =
+    'This PR was generated to address a detected security vulnerability.';
+}
+
+function isFileAddition(file: unknown): file is FileAddition {
+  return (
+    !!file && typeof file === 'object' && (file as any).type === 'addition'
+  );
+}
+
+function parseRpmtestArtifactsResults(results: UpdateArtifactsResult[] | null):
+  | {
+      name: string;
+      oldVersion: string;
+      newVersion: string;
+    }[]
+  | null {
+  if (!results) {
+    return null;
+  }
+  const rpmRegex = /^(?<name>.+)-(?<version>[^-]+-[^-]+)\.src\.rpm$/;
+  const changes = results.flatMap((res) => {
+    let parsedContents = null;
+    let parsedPreviousContents = null;
+    const rpmVersionChanges: {
+      name: string;
+      oldVersion: string;
+      newVersion: string;
+    }[] = [];
+    if (isFileAddition(res.file)) {
+      try {
+        if (res.file.contents) {
+          parsedContents = yaml.load(res.file.contents.toString());
+        }
+      } catch (e) {
+        parsedContents = {
+          error: 'Failed to parse contents as YAML',
+          details: e,
+        };
+      }
+      try {
+        if (res.file.previousContents) {
+          parsedPreviousContents = yaml.load(
+            res.file.previousContents.toString(),
+          );
+        }
+      } catch (e) {
+        parsedPreviousContents = {
+          error: 'Failed to parse previousContents as YAML',
+          details: e,
+        };
+      }
+      // Extract sourcerpm fields from both YAMLs
+      const getSourcerpms = (parsed: any): string[] => {
+        if (!parsed) {
+          return [];
+        }
+        const rpms: string[] = [];
+        const search = (obj: any): void => {
+          if (Array.isArray(obj)) {
+            obj.forEach(search);
+          } else if (obj && typeof obj === 'object') {
+            for (const [key, value] of Object.entries(obj)) {
+              if (key === 'sourcerpm' && typeof value === 'string') {
+                rpms.push(value);
+              } else {
+                search(value);
+              }
+            }
+          }
+        };
+        search(parsed);
+        return rpms;
+      };
+      const newSourcerpms = getSourcerpms(parsedContents);
+      const oldSourcerpms = getSourcerpms(parsedPreviousContents);
+      // Map by name for easy comparison
+      const parseRpm = (
+        s: string,
+      ): { name: string; version: string } | null => {
+        const m = rpmRegex.exec(s);
+        if (!m?.groups) {
+          return null;
+        }
+        return {
+          name: m.groups.name,
+          version: m.groups.version,
+        };
+      };
+      const oldMap = new Map<string, string>();
+      for (const rpm of oldSourcerpms) {
+        const parsed = parseRpm(rpm);
+        if (parsed) {
+          oldMap.set(parsed.name, parsed.version);
+        }
+      }
+      for (const rpm of newSourcerpms) {
+        const parsed = parseRpm(rpm);
+        if (parsed) {
+          const oldVersion = oldMap.get(parsed.name);
+          if (oldVersion && oldVersion !== parsed.version) {
+            rpmVersionChanges.push({
+              name: parsed.name,
+              oldVersion,
+              newVersion: parsed.version,
+            });
+          }
+        }
+      }
+    }
+    return rpmVersionChanges;
+  });
+  return changes.length > 0 ? changes : null;
+}
+
+// this will be used for CVE information, but just for demonstration purposes
+function addRpmtestPrBodyNotes(
+  config: BranchConfig,
+  parsedResults:
+    | { name: string; oldVersion: string; newVersion: string }[]
+    | null,
+): void {
+  if (!parsedResults || parsedResults.length === 0) {
+    return;
+  }
+  // Assume there is always exactly one upgrade
+  const upgrade = Array.isArray((config as any).upgrades)
+    ? (config as any).upgrades[0]
+    : undefined;
+  if (!upgrade) {
+    return;
+  }
+  if (!Array.isArray(upgrade.prBodyNotes)) {
+    upgrade.prBodyNotes = [];
+  }
+  for (const { name, oldVersion, newVersion } of parsedResults) {
+    upgrade.prBodyNotes.push(
+      `RPM package "${name}" was updated from version "${oldVersion}" to "${newVersion}".`,
+    );
+  }
+}
+
+// this function is mean to represent finding CVEs in the DB
+// If no CVEs are found, ensure that the branch is not scheduled
+function setScheduleIfNoCVEs(
+  config: BranchConfig,
+  parsedResults:
+    | { name: string; oldVersion: string; newVersion: string }[]
+    | null,
+): void {
+  if (!parsedResults || parsedResults.length === 0) {
+    return;
+  }
+  const hasVim = parsedResults.some(({ name }) => name === 'vim');
+  // only create PR if vim is being updated... sort of a CVE simulation
+  if (!hasVim) {
+    config.schedule = [];
+    config.isScheduledNow = false;
+  }
 }

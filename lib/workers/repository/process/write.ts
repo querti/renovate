@@ -112,11 +112,52 @@ export async function syncBranchState(
   return branchState;
 }
 
+function addDuplicatedRpmTestLockFileBranches(
+  branches: BranchConfig[],
+): BranchConfig[] {
+  const newBranches: BranchConfig[] = [];
+  for (const branch of branches) {
+    if (
+      branch.upgrades?.some(
+        (upgrade) =>
+          upgrade.manager === 'rpmtest' &&
+          upgrade.updateType === 'lockFileMaintenance',
+      )
+    ) {
+      // Deep clone the branch
+      const duplicatedBranch = JSON.parse(JSON.stringify(branch));
+      // Set schedule and prCreation at the top level
+      duplicatedBranch.schedule = ['at any time'];
+      duplicatedBranch.prCreation = 'immediate';
+      duplicatedBranch.commitMessage = '[SECURITY] RPM Lockfile maintenance';
+      duplicatedBranch.prTitle = '[SECURITY] RPM Lockfile maintenance';
+
+      // Set branchTopic and update branchName accordingly
+      const oldBranchTopic = duplicatedBranch.branchTopic;
+      const newBranchTopic = 'security-lock-file-maintenance';
+      duplicatedBranch.branchTopic = newBranchTopic;
+      if (
+        typeof duplicatedBranch.branchName === 'string' &&
+        typeof oldBranchTopic === 'string' &&
+        duplicatedBranch.branchName.includes(oldBranchTopic)
+      ) {
+        duplicatedBranch.branchName = duplicatedBranch.branchName.replace(
+          oldBranchTopic,
+          newBranchTopic,
+        );
+      }
+      newBranches.push(duplicatedBranch);
+    }
+  }
+  return [...branches, ...newBranches];
+}
+
 export async function writeUpdates(
   config: RenovateConfig,
   allBranches: BranchConfig[],
 ): Promise<WriteUpdateResult> {
-  const branches = allBranches;
+  const branches = addDuplicatedRpmTestLockFileBranches(allBranches);
+
   logger.debug(
     `Processing ${branches.length} branch${
       branches.length === 1 ? '' : 'es'
@@ -136,6 +177,7 @@ export async function writeUpdates(
   setCount('HourlyPRs', prsThisHourCount);
 
   for (const branch of branches) {
+    //logger.debug(`Processing branch: ${JSON.stringify(branch, null, 2)}`);
     const { baseBranch, branchName } = branch;
     const meta: Record<string, string> = { branch: branchName };
     if (config.baseBranches?.length && baseBranch) {

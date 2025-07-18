@@ -62,6 +62,11 @@ export interface FileAddition {
   isExecutable?: boolean;
 
   isSymlink?: boolean;
+
+  /**
+   * Previous contents of the file, if available (e.g., for lock file updates)
+   */
+  previousContents?: string | Buffer | null;
 }
 
 export interface FileDeletion {
