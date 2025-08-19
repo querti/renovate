@@ -51,13 +51,18 @@ export async function postProcessRPMVulnerabilities(
 export function parseLockfilePackages(
   results: UpdateArtifactsResult[],
 ): PackageDependency[] {
-  const packages: PackageDependency[] = [];
+  const oldPackages = new Map<string, PackageDependency>();
+  const newPackages = new Map<string, PackageDependency>();
   for (const result of results) {
     if (result?.file?.type !== 'addition') {
       continue;
     }
     const oldLockFileContent = result.file.previousContents;
     const newLockFileContent = result.file.contents;
+    logger.debug(
+      { oldLockFileContent, newLockFileContent },
+      'Lockfile contents',
+    );
 
     if (
       typeof oldLockFileContent === 'string' &&
@@ -71,39 +76,40 @@ export function parseLockfilePackages(
           customSchema: RedHatRPMLockfile,
         });
         for (const arch of oldLockFile.arches) {
-          const archDeps: PackageDependency[] = arch.packages.map(
-            (dependency) => ({
+          for (const dependency of arch.packages) {
+            const key = `${arch.arch}-${dependency.name}`;
+            oldPackages.set(key, {
               depName: dependency.name,
               packageName: dependency.name,
               currentValue: dependency.evr,
               currentVersion: dependency.evr,
               versioning: 'rpm',
               datasource: 'rpm-lockfile',
-            }),
-          );
-          for (const dep of archDeps) {
-            if (packages.findIndex((d) => d.depName === dep.depName) === -1) {
-              packages.push(dep);
-            }
+            });
           }
         }
 
-        const newLockfilePkgMap = new Map<string, string>();
         for (const arch of newLockFile.arches) {
-          for (const pkg of arch.packages) {
-            newLockfilePkgMap.set(pkg.name, pkg.evr);
+          for (const dependency of arch.packages) {
+            const key = `${arch.arch}-${dependency.name}`;
+            newPackages.set(key, {
+              depName: dependency.name,
+              packageName: dependency.name,
+              currentValue: dependency.evr,
+              currentVersion: dependency.evr,
+              versioning: 'rpm',
+              datasource: 'rpm-lockfile',
+            });
           }
         }
-        for (const pkg of packages) {
-          const newEvr = newLockfilePkgMap.get(
-            pkg.depName ?? pkg.packageName ?? '',
-          );
-          if (newEvr) {
-            pkg.newValue = newEvr;
-            pkg.newVersion = newEvr;
+        // Add new versions from the new lockfile
+        for (const [key, oldPackage] of oldPackages.entries()) {
+          const newPackage = newPackages.get(key);
+          if (newPackage) {
+            oldPackage.newValue = newPackage.currentVersion;
+            oldPackage.newVersion = newPackage.currentVersion;
           } else {
-            // if the package is not found in the new lockfile then mark it as such
-            pkg.enabled = false;
+            oldPackage.enabled = false;
           }
         }
       } catch {
@@ -111,10 +117,12 @@ export function parseLockfilePackages(
       }
     }
   }
-  const changedPackages = packages.filter(
+  // include only packages where the version has changed or is not set
+  const updatedPackages = Array.from(oldPackages.values()).filter(
     (pkg) => pkg.currentVersion !== pkg.newVersion || !pkg.newVersion,
   );
-  return changedPackages;
+
+  return updatedPackages;
 }
 
 export async function createVulnerabilities(

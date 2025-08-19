@@ -244,15 +244,15 @@ export class RpmVulnerabilities {
             versioningApi,
           );
           // This condition doesn't work
-          // if (
-          //   filterNonFixed &&
-          //   !versioningApi.matches(dep.newVersion!, fixedVersion!)
-          // ) {
-          //   logger.debug(
-          //     `Skipping vulnerability ${osvVulnerability.id} because it is not fixed in the new version ${dep.newVersion}`,
-          //   );
-          //   continue;
-          // }
+          if (
+            filterNonFixed &&
+            !versioningApi.matches(dep.newVersion!, fixedVersion!)
+          ) {
+            logger.debug(
+              `Skipping vulnerability ${osvVulnerability.id} because it is not fixed in the new version ${dep.newVersion}`,
+            );
+            continue;
+          }
 
           vulnerabilities.push({
             packageName,

@@ -487,19 +487,28 @@ export async function managerUpdateArtifacts(
   config: BranchConfig,
 ): Promise<UpdateArtifactsResult[] | null> {
   const updateArtifacts = get(manager, 'updateArtifacts');
-  if (updateArtifacts) {
-    const result = await updateArtifacts(updateArtifact);
-    if (
-      manager === 'rpm-lockfile' &&
-      config.isLockFileMaintenance &&
-      config.isVulnerabilityAlert
-    ) {
-      return await postProcessRPMVulnerabilities(result, config);
-    } else {
-      return result;
-    }
+  if (!updateArtifacts) {
+    return null;
   }
-  return null;
+
+  if (updateArtifact.config.skipArtifactsUpdate) {
+    logger.debug(
+      { manager, packageFileName: updateArtifact.packageFileName },
+      'Skipping artifact update',
+    );
+    return null;
+  }
+
+  const result = await updateArtifacts(updateArtifact);
+  if (
+    manager === 'rpm-lockfile' &&
+    config.isLockFileMaintenance &&
+    config.isVulnerabilityAlert
+  ) {
+    return await postProcessRPMVulnerabilities(result, config);
+  } else {
+    return result;
+  }
 }
 
 function processUpdateArtifactResults(
