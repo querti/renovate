@@ -494,7 +494,7 @@ export async function managerUpdateArtifacts(
       config.isLockFileMaintenance &&
       config.isVulnerabilityAlert
     ) {
-      return postProcessRPMVulnerabilities(result, config);
+      return await postProcessRPMVulnerabilities(result, config);
     } else {
       return result;
     }
